@@ -1,25 +1,58 @@
-const rooms = {}; // { roomName: { creatorId: socketId, creatorName: username } }
+const rooms = {}; // код_кімнати: { creatorId, creatorName, password, users: [] }
 
-function createRoom(roomName, socketId, username) {
-  if (!rooms[roomName]) {
-    rooms[roomName] = {
-      creatorId: socketId,
-      creatorName: username
-    };
+function createRoom(code, socketId, name, password) {
+  rooms[code] = {
+    creatorId: socketId,
+    creatorName: name,
+    password,
+    users: []
+  };
+}
+
+function getRoom(code) {
+  return rooms[code];
+}
+
+function getRoomCreator(code) {
+  return rooms[code]?.creatorId;
+}
+
+function getRoomCreatorName(code) {
+  return rooms[code]?.creatorName || 'Невідомо';
+}
+
+function deleteRoom(code) {
+  delete rooms[code];
+}
+
+function checkPassword(code, password) {
+  return rooms[code]?.password === password;
+}
+
+function isUsernameTaken(code, name) {
+  return rooms[code]?.users.includes(name);
+}
+
+function addUserToRoom(code, name) {
+  if (!rooms[code]) return;
+  if (!rooms[code].users.includes(name)) {
+    rooms[code].users.push(name);
   }
 }
 
-function getRoomCreator(roomName) {
-  return rooms[roomName] ? rooms[roomName].creatorId : null;
+function removeUserFromRoom(code, name) {
+  if (!rooms[code]) return;
+  rooms[code].users = rooms[code].users.filter((u) => u !== name);
 }
 
-function getRoomCreatorName(roomName) {
-  return rooms[roomName] ? rooms[roomName].creatorName : null;
-}
-
-function deleteRoom(roomName) {
-  if (rooms[roomName]) {
-    delete rooms[roomName];
-  }
-}
-module.exports = { createRoom, getRoomCreator, getRoomCreatorName, deleteRoom };
+module.exports = {
+  createRoom,
+  getRoom,
+  getRoomCreator,
+  getRoomCreatorName,
+  deleteRoom,
+  checkPassword,
+  isUsernameTaken,
+  addUserToRoom,
+  removeUserFromRoom
+};

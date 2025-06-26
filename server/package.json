@@ -16,5 +16,8 @@
     "mongoose": "^8.16.0",
     "multer": "^2.0.1",
     "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "nanoid": "^5.1.5"
   }
 }
