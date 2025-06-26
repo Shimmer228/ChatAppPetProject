@@ -1,0 +1,26 @@
+# node_modules (і для клієнта, і для бекенду)
+**/node_modules/
+
+# збірки React
+todo-client/build/
+
+# середовищні змінні
+**/.env
+
+# лог-файли
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# system
+.DS_Store
+Thumbs.db
+
+# IDE/editor
+.vscode/
+.idea/
+
+# інші тимчасові файли
+*.swp
+*.swo
