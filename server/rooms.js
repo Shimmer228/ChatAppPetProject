@@ -1,10 +1,10 @@
-const rooms = {}; // код_кімнати: { creatorId, creatorName, password, users: [] }
+const rooms = {}; // code: { creatorId, creatorName, name, users: [] }
 
-function createRoom(code, socketId, name, password) {
+function createRoom(code, socketId, creatorName, roomName) {
   rooms[code] = {
     creatorId: socketId,
-    creatorName: name,
-    password,
+    creatorName,
+    name: roomName,
     users: []
   };
 }
@@ -21,13 +21,16 @@ function getRoomCreatorName(code) {
   return rooms[code]?.creatorName || 'Невідомо';
 }
 
+function getRoomName(code) {
+  return rooms[code]?.name || '';
+}
+
 function deleteRoom(code) {
   delete rooms[code];
 }
 
-function checkPassword(code, password) {
-  return rooms[code]?.password === password;
-}
+// password is no longer used; code itself is the secret
+function checkPassword() { return true; }
 
 function isUsernameTaken(code, name) {
   return rooms[code]?.users.includes(name);
@@ -50,6 +53,7 @@ module.exports = {
   getRoom,
   getRoomCreator,
   getRoomCreatorName,
+  getRoomName,
   deleteRoom,
   checkPassword,
   isUsernameTaken,
