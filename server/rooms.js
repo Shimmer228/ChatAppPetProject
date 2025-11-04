@@ -1,10 +1,11 @@
-const rooms = {}; // code: { creatorId, creatorName, name, users: [] }
+const rooms = {}; // code: { creatorId, creatorName, name, nameEnc, users: [] }
 
 function createRoom(code, socketId, creatorName, roomName) {
   rooms[code] = {
     creatorId: socketId,
     creatorName,
     name: roomName,
+    nameEnc: null,
     users: []
   };
 }
@@ -23,6 +24,15 @@ function getRoomCreatorName(code) {
 
 function getRoomName(code) {
   return rooms[code]?.name || '';
+}
+
+function getRoomNameEnc(code) {
+  return rooms[code]?.nameEnc || null;
+}
+
+function setRoomNameEnc(code, nameEnc) {
+  if (!rooms[code]) return;
+  rooms[code].nameEnc = nameEnc;
 }
 
 function deleteRoom(code) {
@@ -48,15 +58,29 @@ function removeUserFromRoom(code, name) {
   rooms[code].users = rooms[code].users.filter((u) => u !== name);
 }
 
+function getUsers(code) {
+  return rooms[code]?.users || [];
+}
+
+function setRoomCreator(code, socketId, creatorName) {
+  if (!rooms[code]) return;
+  rooms[code].creatorId = socketId;
+  rooms[code].creatorName = creatorName;
+}
+
 module.exports = {
   createRoom,
   getRoom,
   getRoomCreator,
   getRoomCreatorName,
   getRoomName,
+  getRoomNameEnc,
   deleteRoom,
   checkPassword,
   isUsernameTaken,
   addUserToRoom,
-  removeUserFromRoom
+  removeUserFromRoom,
+  getUsers,
+  setRoomCreator,
+  setRoomNameEnc
 };

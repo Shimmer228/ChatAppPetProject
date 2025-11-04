@@ -11,11 +11,14 @@ const {
   getRoomCreator,
   getRoomCreatorName,
   getRoomName,
+  getRoomNameEnc,
   deleteRoom,
   checkPassword,
   isUsernameTaken,
   addUserToRoom,
-  removeUserFromRoom
+  removeUserFromRoom,
+  getUsers,
+  setRoomCreator
 } = require('./rooms');
 
 const mongoose = require('mongoose');
@@ -200,6 +203,7 @@ io.on('connection', (socket) => {
     socket.join(code);
     socket.emit('you_are_admin');
     addUserToRoom(code, name);
+    io.to(code).emit('participants_update', { users: getUsers(code), owner: getRoomCreatorName(code) });
 
     const systemJoin = {
       username: 'system',
@@ -211,7 +215,7 @@ io.on('connection', (socket) => {
 
     await Message.create(systemJoin);
     socket.emit('chat_history', { messages: [systemJoin], isAdmin: true });
-    socket.emit('room_metadata', { creator: name, code, name: roomName || '' });
+    socket.emit('room_metadata', { creator: name, code, name: roomName || '', nameEnc: getRoomNameEnc(code) });
 
     // persist room to user profile if authenticated
     if (socket.data.userId) {
@@ -267,24 +271,27 @@ io.on('connection', (socket) => {
 
     socket.join(code);
     addUserToRoom(code, name);
+    io.to(code).emit('participants_update', { users: getUsers(code), owner: getRoomCreatorName(code) });
 
     const history = await Message.find({ room: code }).sort({ createdAt: 1 });
     socket.emit('chat_history', { messages: history, isAdmin: socket.data.isAdmin });
 
-    const joinMsg = {
-      username: 'system',
-      text: `${name} приєднався до кімнати`,
-      room: code,
-      time: new Date().toLocaleTimeString(),
-      system: true
-    };
-
-    await Message.create(joinMsg);
-    io.to(code).emit('receive_message', joinMsg);
+    // Only announce join if this is a fresh join, not a silent reconnect
+    if (!isUsingSavedName) {
+      const joinMsg = {
+        username: 'system',
+        text: `${name} приєднався до кімнати`,
+        room: code,
+        time: new Date().toLocaleTimeString(),
+        system: true
+      };
+      await Message.create(joinMsg);
+      io.to(code).emit('receive_message', joinMsg);
+    }
 
     const creator = getRoomCreatorName(code);
     const roomNameValue = getRoomName(code);
-    io.to(code).emit('room_metadata', { creator, code, name: roomNameValue });
+    io.to(code).emit('room_metadata', { creator, code, name: roomNameValue, nameEnc: getRoomNameEnc(code) });
 
     // persist room to user profile if authenticated
     if (socket.data.userId) {
@@ -310,6 +317,79 @@ io.on('connection', (socket) => {
     } else {
       console.log(`[join_room] No userId, skipping room save`);
     }
+  });
+
+  // Provide participants list on demand
+  socket.on('request_participants', () => {
+    const { room } = socket.data;
+    if (!room) return;
+    io.to(socket.id).emit('participants_update', { users: getUsers(room), owner: getRoomCreatorName(room) });
+  });
+
+  // Admin sets encrypted room name blob { ciphertext, iv, alg }
+  socket.on('set_room_name_enc', ({ nameEnc }) => {
+    const { room } = socket.data;
+    if (!room) return;
+    if (getRoomCreator(room) !== socket.id) {
+      return socket.emit('error_message', 'Лише власник може змінювати назву кімнати');
+    }
+    if (!nameEnc || typeof nameEnc !== 'object') return;
+    setRoomNameEnc(room, nameEnc);
+    const creator = getRoomCreatorName(room);
+    io.to(room).emit('room_metadata', { creator, code: room, name: getRoomName(room), nameEnc: getRoomNameEnc(room) });
+  });
+
+  // Owner can kick a user from the room
+  socket.on('kick_user', async ({ username }) => {
+    const { room } = socket.data;
+    if (!room) return;
+    if (getRoomCreator(room) !== socket.id) {
+      return socket.emit('error_message', 'Лише власник кімнати може видаляти користувачів');
+    }
+    removeUserFromRoom(room, username);
+    // Disconnect or force leave all sockets of that username in the room
+    const sockets = await io.in(room).fetchSockets();
+    for (const s of sockets) {
+      if (s.data?.username === username) {
+        s.leave(room);
+        s.emit('kicked', { room });
+      }
+    }
+    io.to(room).emit('participants_update', { users: getUsers(room), owner: getRoomCreatorName(room) });
+    const sys = { username: 'system', text: `${username} був видалений власником`, room, time: new Date().toLocaleTimeString(), system: true };
+    await Message.create(sys);
+    io.to(room).emit('receive_message', sys);
+  });
+
+  // Owner can transfer ownership to another user in the room
+  socket.on('transfer_ownership', async ({ username }) => {
+    const { room } = socket.data;
+    if (!room) return;
+    if (getRoomCreator(room) !== socket.id) {
+      return socket.emit('error_message', 'Лише власник може передавати власництво');
+    }
+    const sockets = await io.in(room).fetchSockets();
+    const target = sockets.find((s) => s.data?.username === username);
+    if (!target) return socket.emit('error_message', 'Користувача не знайдено в кімнаті');
+    setRoomCreator(room, target.id, username);
+    // notify clients about new metadata
+    const creator = getRoomCreatorName(room);
+    const roomNameValue = getRoomName(room);
+    io.to(room).emit('room_metadata', { creator, code: room, name: roomNameValue, nameEnc: getRoomNameEnc(room) });
+    // update admin flags on sockets
+    for (const s of sockets) {
+      if (s.id === target.id) {
+        s.data.isAdmin = true;
+        s.emit('you_are_admin');
+      } else if (s.id === socket.id || s.data?.isAdmin) {
+        s.data.isAdmin = false;
+        s.emit('you_are_not_admin');
+      }
+    }
+    io.to(room).emit('participants_update', { users: getUsers(room), owner: getRoomCreatorName(room) });
+    const sys = { username: 'system', text: `Власництво кімнати передано користувачу ${username}`, room, time: new Date().toLocaleTimeString(), system: true };
+    await Message.create(sys);
+    io.to(room).emit('receive_message', sys);
   });
 
   socket.on('send_message', async (data) => {
@@ -347,6 +427,7 @@ socket.on('disconnect', async () => {
 
   if (room && username) {
     removeUserFromRoom(room, username);
+    io.to(room).emit('participants_update', { users: getUsers(room), owner: getRoomCreatorName(room) });
 
     const leaveMsg = {
       username: 'system',

@@ -22,6 +22,8 @@ const ChatPage = () => {
   const [accountAvatarUrl, setAccountAvatarUrl] = useState('');
   const [cryptoReady, setCryptoReady] = useState(false);
   const [derivedKey, setDerivedKey] = useState(null); // CryptoKey for AES-GCM
+  const [participants, setParticipants] = useState([]);
+  const [ownerName, setOwnerName] = useState('');
 
   // helper: base64
   const toBase64 = (arrayBuffer) => {
@@ -106,7 +108,7 @@ const ChatPage = () => {
 
   const deleteRoomFromHistory = async (roomCode) => {
     if (!token) return;
-    if (!confirm('Видалити цю кімнату з історії?')) return;
+    if (!window.confirm('Видалити цю кімнату з історії?')) return;
     try {
       const res = await fetch(`http://localhost:3001/me/chats/${roomCode}`, {
         method: 'DELETE',
@@ -130,6 +132,9 @@ const ChatPage = () => {
     socket.off('you_are_admin');
     socket.off('room_cleared');
     socket.off('error_message');
+    socket.off('participants_update');
+    socket.off('you_are_not_admin');
+    socket.off('kicked');
 
     socket.on('chat_history', ({ messages, isAdmin }) => {
       setChatMessages(messages);
@@ -139,19 +144,57 @@ const ChatPage = () => {
       if (token) {
         fetchMyRooms();
       }
+      // After entering the room and having derivedKey ready, if we're the admin and we have a plaintext roomName, push encrypted name to server
+      setTimeout(async () => {
+        if (isAdmin && roomName && cryptoReady && derivedKey) {
+          try {
+            const iv = window.crypto.getRandomValues(new Uint8Array(12));
+            const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, derivedKey, new TextEncoder().encode(roomName));
+            socket.emit('set_room_name_enc', { nameEnc: { ciphertext: toBase64(ct), iv: toBase64(iv), alg: 'AES-GCM' } });
+          } catch {}
+        }
+      }, 0);
     });
 
     socket.on('receive_message', (msg) => {
       setChatMessages((prev) => [...prev, msg]);
     });
 
-    socket.on('room_metadata', ({ creator, code, name }) => {
+    socket.on('room_metadata', ({ creator, code, name, nameEnc }) => {
       setCreatorName(creator);
       setRoom(code);
-      setRoomName(name || '');
+      // Prefer encrypted name when available
+      if (nameEnc && nameEnc.ciphertext && nameEnc.iv && derivedKey && cryptoReady) {
+        (async () => {
+          try {
+            const ivBuf = fromBase64(nameEnc.iv);
+            const ctBuf = fromBase64(nameEnc.ciphertext);
+            const pt = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(ivBuf) }, derivedKey, ctBuf);
+            setRoomName(new TextDecoder().decode(pt));
+          } catch (e) {
+            setRoomName(name || '');
+          }
+        })();
+      } else {
+        setRoomName(name || '');
+      }
     });
 
     socket.on('you_are_admin', () => setIsAdmin(true));
+    socket.on('you_are_not_admin', () => setIsAdmin(false));
+
+    socket.on('participants_update', ({ users, owner }) => {
+      setParticipants(users || []);
+      setOwnerName(owner || '');
+    });
+
+    socket.on('kicked', ({ room: kickedRoom }) => {
+      if (kickedRoom && kickedRoom === room) {
+        alert('Вас було видалено з кімнати власником');
+        setStep('choice');
+        resetState();
+      }
+    });
 
     socket.on('room_cleared', () => {
       alert('Кімнату видалено. Повертаємось на головну.');
@@ -226,6 +269,8 @@ const ChatPage = () => {
     const res = await fetch('http://localhost:3001/upload-avatar', { method: 'POST', body: formData });
     const data = await res.json();
     setAccountAvatarUrl(data.url);
+    // Keep chat avatar in sync with account avatar if none was explicitly chosen for this session
+    if (!avatarUrl) setAvatarUrl(data.url);
     if (token) {
       await fetch('http://localhost:3001/me/avatar', {
         method: 'POST',
@@ -245,7 +290,8 @@ const handleCreateRoom = (e) => {
     alert('Введіть назву кімнати');
     return;
   }
-  socket.emit('create_room', { name: username, avatar: avatarUrl, roomName });
+  const finalAvatar = accountAvatarUrl || avatarUrl;
+  socket.emit('create_room', { name: username, avatar: finalAvatar, roomName });
 };
 
   const joinRoomDirect = async (roomCode, roomNameValue, savedUsername, savedAvatar) => {
@@ -255,7 +301,7 @@ const handleCreateRoom = (e) => {
     
     // Use saved username/avatar if available, otherwise use account username if logged in
     let finalUsername = savedUsername;
-    let finalAvatar = savedAvatar;
+    let finalAvatar = savedAvatar || accountAvatarUrl || avatarUrl;
     
     // If no saved username but user is logged in, try to get account username
     if (!finalUsername && token) {
@@ -302,7 +348,7 @@ const handleCreateRoom = (e) => {
     
     // Fallback to current state if no saved data
     if (!finalUsername) finalUsername = username;
-    if (!finalAvatar) finalAvatar = avatarUrl;
+    if (!finalAvatar) finalAvatar = accountAvatarUrl || avatarUrl;
     
     if (!finalUsername || !finalUsername.trim()) {
       // Fallback to manual join if no username available
@@ -354,8 +400,9 @@ const handleCreateRoom = (e) => {
       });
     }
     
+    const finalAvatar = accountAvatarUrl || avatarUrl;
     console.log('Emitting join_room', { name: username, code: room });
-    socket.emit('join_room', { name: username, avatar: avatarUrl, code: room });
+    socket.emit('join_room', { name: username, avatar: finalAvatar, code: room });
   };
     useEffect(() => {
       const handleBeforeUnload = (e) => {
@@ -489,8 +536,8 @@ const handleCreateRoom = (e) => {
       <div style={styles.container}>
       <div style={styles.header}>
         <div>
-          <h2>Кімната: <em>{roomName || '—'}</em> <small>({room})</small></h2>
-          <p>Творець: <strong>{creatorName}</strong></p>
+          <h2>Кімната: <em>{roomName || '—'}</em></h2>
+          <p>Власник: <strong>{ownerName || creatorName}</strong></p>
         </div>
         <div style={styles.actionButtons}>
           <button onClick={() => setStep('choice')} style={styles.copyButton}>В головне меню</button>
@@ -514,15 +561,36 @@ const handleCreateRoom = (e) => {
         </div>
       </div>
 
-        <div style={styles.messagesBox}>
-          {chatMessages.map((msg, i) => (
-            msg.system ? (
-              <div key={i} style={styles.systemMessage}>{msg.text}</div>
-            ) : (
-              <MessageItem key={i} msg={msg} isMe={msg.username === username} derivedKey={derivedKey} cryptoReady={cryptoReady} />
-            )
-          ))}
-
+        <div style={styles.contentRow}>
+          <div style={styles.messagesBox}>
+            {chatMessages.map((msg, i) => (
+              msg.system ? (
+                <div key={i} style={styles.systemMessage}>{msg.text}</div>
+              ) : (
+                <MessageItem key={i} msg={msg} isMe={msg.username === username} derivedKey={derivedKey} cryptoReady={cryptoReady} />
+              )
+            ))}
+          </div>
+          <div style={styles.sidebar}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
+              <strong>Учасники</strong>
+              <button onClick={() => socket.emit('request_participants')} style={{...styles.copyButton, minWidth:'auto', padding:'6px 10px'}}>↻</button>
+            </div>
+            <div style={{fontSize:12, color:'#bbb', marginBottom:8}}>Власник: {ownerName || creatorName}</div>
+            <div style={{display:'flex', flexDirection:'column', gap:6}}>
+              {participants.map((u) => (
+                <div key={u} style={{display:'flex', alignItems:'center', justifyContent:'space-between', background:'#2b2b2b', border:'1px solid #3a3a3a', borderRadius:6, padding:'6px 8px'}}>
+                  <span style={{fontWeight: u === ownerName ? 'bold' : 'normal'}}>{u}{u === ownerName ? ' (власник)' : ''}</span>
+                  {isAdmin && u !== ownerName && (
+                    <div style={{display:'flex', gap:6}}>
+                      <button onClick={() => socket.emit('kick_user', { username: u })} style={{...styles.clearButton, minWidth:'auto', padding:'6px 10px'}}>Видалити</button>
+                      <button onClick={() => socket.emit('transfer_ownership', { username: u })} style={{...styles.copyButton, minWidth:'auto', padding:'6px 10px'}}>Передати власн.</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         <form onSubmit={async (e) => {
@@ -570,7 +638,7 @@ const handleCreateRoom = (e) => {
 
 const styles = {
   container: {
-    maxWidth: 700,
+    maxWidth: 980,
     margin: '40px auto',
     padding: 20,
     borderRadius: 12,
@@ -598,7 +666,9 @@ const styles = {
     backgroundColor: '#333',
     borderRadius: 8,
     border: '1px solid #444',
-    color: '#f1f1f1'
+    color: '#f1f1f1',
+    flex: 1,
+    minWidth: 0
   },
   message: {
     display: 'flex',
@@ -664,8 +734,11 @@ const styles = {
   },
   actionButtons: {
     display: 'flex',
-    flexDirection: 'column',
-    gap: 10
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    maxWidth: 420,
+    justifyContent: 'flex-end'
   },
   copyButton: {
     padding: '10px 20px',
@@ -675,7 +748,21 @@ const styles = {
     borderRadius: 6,
     cursor: 'pointer',
     transition: 'background-color 0.3s',
-    minWidth: 160
+    minWidth: 120
+  },
+  contentRow: {
+    display: 'flex',
+    gap: 12,
+    alignItems: 'stretch'
+  },
+  sidebar: {
+    width: 260,
+    backgroundColor: '#2c2c2c',
+    border: '1px solid #3a3a3a',
+    borderRadius: 8,
+    padding: 10,
+    height: 400,
+    overflowY: 'auto'
   }
 
 };
