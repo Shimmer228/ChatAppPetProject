@@ -282,6 +282,18 @@ const ChatPage = () => {
     }
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    setToken('');
+    setStep('auth');
+    setMyRooms([]);
+    setAccountAvatarUrl('');
+    if (socket.connected) {
+      socket.disconnect();
+    }
+    resetState();
+  };
+
 const handleCreateRoom = (e) => {
   e.preventDefault();
   if (!username.trim()) {
@@ -460,7 +472,7 @@ const handleCreateRoom = (e) => {
             <button onClick={async () => { await fetchMyRooms(); setStep('chats'); }} style={styles.button}>Мої чати</button>
             <label style={{fontSize:12, color:'#bbb'}}>Оновити аватар акаунта</label>
             <input type="file" accept="image/*" onChange={handleAccountAvatarUpload} style={styles.input} />
-            <button onClick={() => { localStorage.removeItem('token'); setToken(''); }} style={styles.clearButton}>Вийти</button>
+            <button onClick={handleLogout} style={styles.clearButton}>Вийти</button>
           </>
         )}
       </div>
