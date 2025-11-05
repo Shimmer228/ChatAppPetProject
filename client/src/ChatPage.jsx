@@ -184,16 +184,18 @@ const ChatPage = () => {
     socket.on('you_are_not_admin', () => setIsAdmin(false));
 
     socket.on('participants_update', ({ users, owner }) => {
-      setParticipants(users || []);
+      // users can be array of strings or array of {name, isGuest}
+      const normalized = (users || []).map((u) =>
+        typeof u === 'string' ? { name: u, isGuest: true } : u
+      );
+      setParticipants(normalized);
       setOwnerName(owner || '');
     });
 
-    socket.on('kicked', ({ room: kickedRoom }) => {
-      if (kickedRoom && kickedRoom === room) {
-        alert('Вас було видалено з кімнати власником');
-        setStep('choice');
-        resetState();
-      }
+    socket.on('kicked', () => {
+      alert('Вас було видалено з кімнати власником');
+      setStep('choice');
+      resetState();
     });
 
     socket.on('room_cleared', () => {
@@ -579,12 +581,15 @@ const handleCreateRoom = (e) => {
             <div style={{fontSize:12, color:'#bbb', marginBottom:8}}>Власник: {ownerName || creatorName}</div>
             <div style={{display:'flex', flexDirection:'column', gap:6}}>
               {participants.map((u) => (
-                <div key={u} style={{display:'flex', alignItems:'center', justifyContent:'space-between', background:'#2b2b2b', border:'1px solid #3a3a3a', borderRadius:6, padding:'6px 8px'}}>
-                  <span style={{fontWeight: u === ownerName ? 'bold' : 'normal'}}>{u}{u === ownerName ? ' (власник)' : ''}</span>
-                  {isAdmin && u !== ownerName && (
+                <div key={u.name} style={{display:'flex', alignItems:'center', justifyContent:'space-between', background:'#2b2b2b', border:'1px solid #3a3a3a', borderRadius:6, padding:'6px 8px'}}>
+                  <span style={{fontWeight: u.name === ownerName ? 'bold' : 'normal'}}>
+                    {u.name}
+                    {u.name === ownerName ? ' (власник)' : (u.isGuest ? ' (гість)' : '')}
+                  </span>
+                  {isAdmin && u.name !== ownerName && (
                     <div style={{display:'flex', gap:6}}>
-                      <button onClick={() => socket.emit('kick_user', { username: u })} style={{...styles.clearButton, minWidth:'auto', padding:'6px 10px'}}>Видалити</button>
-                      <button onClick={() => socket.emit('transfer_ownership', { username: u })} style={{...styles.copyButton, minWidth:'auto', padding:'6px 10px'}}>Передати власн.</button>
+                      <button onClick={() => socket.emit('kick_user', { username: u.name })} style={{...styles.clearButton, minWidth:'auto', padding:'6px 10px'}}>Видалити</button>
+                      <button disabled={u.isGuest} title={u.isGuest ? 'Не можна передавати власність гостю' : ''} onClick={() => socket.emit('transfer_ownership', { username: u.name })} style={{...styles.copyButton, opacity: u.isGuest ? 0.6 : 1, cursor: u.isGuest ? 'not-allowed' : 'pointer', minWidth:'auto', padding:'6px 10px'}}>Передати власн.</button>
                     </div>
                   )}
                 </div>

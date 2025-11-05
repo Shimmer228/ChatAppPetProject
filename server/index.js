@@ -18,7 +18,8 @@ const {
   addUserToRoom,
   removeUserFromRoom,
   getUsers,
-  setRoomCreator
+  setRoomCreator,
+  getRoomsCount
 } = require('./rooms');
 
 const mongoose = require('mongoose');
@@ -192,6 +193,16 @@ io.on('connection', (socket) => {
   };
 
   socket.on('create_room', async ({ name, roomName, avatar }) => {
+    // Only authenticated users can create rooms
+    if (!socket.data.userId) {
+      return socket.emit('error_message', 'Лише зареєстровані користувачі можуть створювати кімнати');
+    }
+    // Limit total active rooms to 1000
+    try {
+      if (getRoomsCount() >= 1000) {
+        return socket.emit('error_message', 'Ліміт кімнат досягнуто (1000)');
+      }
+    } catch {}
   console.log("створення кімнати:", name, roomName, avatar);
     const code = nanoid(30);
     socket.data.username = name;
@@ -203,7 +214,7 @@ io.on('connection', (socket) => {
     socket.join(code);
     socket.emit('you_are_admin');
     addUserToRoom(code, name);
-    io.to(code).emit('participants_update', { users: getUsers(code), owner: getRoomCreatorName(code) });
+    emitParticipants(code);
 
     const systemJoin = {
       username: 'system',
@@ -271,7 +282,7 @@ io.on('connection', (socket) => {
 
     socket.join(code);
     addUserToRoom(code, name);
-    io.to(code).emit('participants_update', { users: getUsers(code), owner: getRoomCreatorName(code) });
+    emitParticipants(code);
 
     const history = await Message.find({ room: code }).sort({ createdAt: 1 });
     socket.emit('chat_history', { messages: history, isAdmin: socket.data.isAdmin });
@@ -323,7 +334,7 @@ io.on('connection', (socket) => {
   socket.on('request_participants', () => {
     const { room } = socket.data;
     if (!room) return;
-    io.to(socket.id).emit('participants_update', { users: getUsers(room), owner: getRoomCreatorName(room) });
+    emitParticipants(room, socket.id);
   });
 
   // Admin sets encrypted room name blob { ciphertext, iv, alg }
@@ -351,11 +362,13 @@ io.on('connection', (socket) => {
     const sockets = await io.in(room).fetchSockets();
     for (const s of sockets) {
       if (s.data?.username === username) {
-        s.leave(room);
         s.emit('kicked', { room });
+        s.leave(room);
+        s.data.room = '';
+        try { s.disconnect(true); } catch {}
       }
     }
-    io.to(room).emit('participants_update', { users: getUsers(room), owner: getRoomCreatorName(room) });
+    emitParticipants(room);
     const sys = { username: 'system', text: `${username} був видалений власником`, room, time: new Date().toLocaleTimeString(), system: true };
     await Message.create(sys);
     io.to(room).emit('receive_message', sys);
@@ -371,6 +384,9 @@ io.on('connection', (socket) => {
     const sockets = await io.in(room).fetchSockets();
     const target = sockets.find((s) => s.data?.username === username);
     if (!target) return socket.emit('error_message', 'Користувача не знайдено в кімнаті');
+    if (!target.data?.userId) {
+      return socket.emit('error_message', 'Не можна передавати власність гостю');
+    }
     setRoomCreator(room, target.id, username);
     // notify clients about new metadata
     const creator = getRoomCreatorName(room);
@@ -386,7 +402,7 @@ io.on('connection', (socket) => {
         s.emit('you_are_not_admin');
       }
     }
-    io.to(room).emit('participants_update', { users: getUsers(room), owner: getRoomCreatorName(room) });
+    emitParticipants(room);
     const sys = { username: 'system', text: `Власництво кімнати передано користувачу ${username}`, room, time: new Date().toLocaleTimeString(), system: true };
     await Message.create(sys);
     io.to(room).emit('receive_message', sys);
@@ -394,6 +410,12 @@ io.on('connection', (socket) => {
 
   socket.on('send_message', async (data) => {
     const { username, room, avatarUrl } = socket.data;
+    // If user is not present in room's user list, block sending
+    try {
+      if (!getUsers(room).includes(username)) {
+        return socket.emit('error_message', 'Вас видалено з кімнати');
+      }
+    } catch {}
     const isEncrypted = !!data.ciphertext && !!data.iv;
     const msg = {
       username,
@@ -409,6 +431,27 @@ io.on('connection', (socket) => {
     };
     const saved = await Message.create(msg);
     io.to(room).emit('receive_message', saved);
+    // Enforce per-room and global message caps
+    try {
+      const roomCount = await Message.countDocuments({ room });
+      if (roomCount > 300) {
+        const toDelete = roomCount - 300;
+        await Message.find({ room }).sort({ createdAt: 1 }).limit(toDelete).then(async (docs) => {
+          const ids = docs.map(d => d._id);
+          if (ids.length) await Message.deleteMany({ _id: { $in: ids } });
+        });
+      }
+      const totalCount = await Message.estimatedDocumentCount();
+      if (totalCount > 30000) {
+        const toDelete = totalCount - 30000;
+        await Message.find({}).sort({ createdAt: 1 }).limit(toDelete).then(async (docs) => {
+          const ids = docs.map(d => d._id);
+          if (ids.length) await Message.deleteMany({ _id: { $in: ids } });
+        });
+      }
+    } catch (e) {
+      console.warn('[cap] prune error', e.message);
+    }
   });
 
   socket.on('clear_messages', async () => {
@@ -427,7 +470,7 @@ socket.on('disconnect', async () => {
 
   if (room && username) {
     removeUserFromRoom(room, username);
-    io.to(room).emit('participants_update', { users: getUsers(room), owner: getRoomCreatorName(room) });
+    emitParticipants(room);
 
     const leaveMsg = {
       username: 'system',
@@ -446,5 +489,25 @@ socket.on('disconnect', async () => {
     }
   }
 });
+
+async function emitParticipants(room, targetSocketId) {
+  try {
+    const sockets = await io.in(room).fetchSockets();
+    const usersSet = new Set(getUsers(room));
+    const enriched = Array.from(usersSet).map((u) => {
+      const sock = sockets.find(s => s.data?.username === u);
+      const isGuest = !(sock && sock.data && sock.data.userId);
+      return { name: u, isGuest };
+    });
+    const payload = { users: enriched, owner: getRoomCreatorName(room) };
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('participants_update', payload);
+    } else {
+      io.to(room).emit('participants_update', payload);
+    }
+  } catch (e) {
+    io.to(targetSocketId || room).emit('participants_update', { users: getUsers(room).map(n => ({ name: n, isGuest: true })), owner: getRoomCreatorName(room) });
+  }
+}
 });
 server.listen(3001, () => console.log('Сервер запущено на порту 3001'));

@@ -68,6 +68,10 @@ function setRoomCreator(code, socketId, creatorName) {
   rooms[code].creatorName = creatorName;
 }
 
+function getRoomsCount() {
+  return Object.keys(rooms).length;
+}
+
 module.exports = {
   createRoom,
   getRoom,
@@ -82,5 +86,6 @@ module.exports = {
   removeUserFromRoom,
   getUsers,
   setRoomCreator,
-  setRoomNameEnc
+  setRoomNameEnc,
+  getRoomsCount
 };
